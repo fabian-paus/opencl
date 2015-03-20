@@ -9,3 +9,5 @@
 *.suo
 *.ipch
 /OpticalFlow/Release
+/Debug
+/Release
