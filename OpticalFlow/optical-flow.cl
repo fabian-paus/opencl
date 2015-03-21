@@ -40,3 +40,40 @@ void downfilter_y(__read_only image2d_t source,
 
 	write_imageui(destination, (int2)(ix, iy), (uint4)(output, 0, 0, 0));
 }
+
+#define WINDOW_RADIUS 4
+
+__kernel 
+void filter_G(__read_only image2d_t firstImage,
+			  __read_only image2d_t secondImage,
+			  int imageWidth, __global int4* G)
+{
+	const int posX = get_global_id(0);
+	const int posY = get_global_id(1);
+
+	int Ix2 = 0;
+	int IxIy = 0;
+	int Iy2 = 0;
+	for (int y = -WINDOW_RADIUS; y <= WINDOW_RADIUS; y++) 
+	{
+		for (int x = -WINDOW_RADIUS; x <= WINDOW_RADIUS ; x++) 
+		{
+			int2 samplePos = { posX + x, posY + y };
+			int ix = read_imagei(firstImage, sampler, samplePos).x;
+			int iy = read_imagei(secondImage, sampler, samplePos).x;
+
+			Ix2 += ix * ix;
+			Iy2 += iy * iy;
+			IxIy += ix * iy;
+		}
+	}
+
+	int4 G2x2 = (int4)(Ix2, IxIy, IxIy, Iy2);
+	G[posY * imageWidth + posX] = G2x2;
+}
+
+__kernel
+void test_buffer(__write_only __global int* C)
+{
+
+}

@@ -56,6 +56,8 @@ int main()
 		auto program = buildProgram(context, device, PROGRAM_FILE);
 		cl::Kernel downFilterX(program, "downfilter_x");
 		cl::Kernel downFilterY(program, "downfilter_y");
+		cl::Kernel filterG(program, "filter_G");
+		cl::Kernel testBuffer(program, "test_buffer");
 
 		cl::ImageFormat format(CL_R, CL_UNSIGNED_INT8);
 		std::size_t widthLevel0 = firstImage.width();
@@ -147,10 +149,46 @@ int main()
 		cl::Event downFilterY_secondLevel1;
 		queue.enqueueNDRangeKernel(downFilterY, cl::NullRange, rangeLevel2, cl::NullRange, &waitEvents, &downFilterY_secondLevel1);
 
-		//waitEvents[0] = downFilterY_firstLevel1;
-		//saveImage(queue, firstImageLevel2, "Level_2_Image_1.jpg", waitEvents);
-		//waitEvents[0] = downFilterY_secondLevel1;
-		//saveImage(queue, secondImageLevel2, "Level2_Image_2.jpg", waitEvents);
+		std::vector<cl::Event> waitEvents2(2);
+
+		// Level 0 G
+		std::size_t sizeG0 = widthLevel0 * heightLevel0 * sizeof (cl_int4);
+		cl::Buffer bufferG0(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_WRITE, sizeG0);
+
+		filterG.setArg(0, firstImageLevel0);
+		filterG.setArg(1, secondImageLevel0);
+		filterG.setArg(2, widthLevel0);
+		filterG.setArg(3, bufferG0);
+		waitEvents2[0] = firstImageCopyEvent;
+		waitEvents2[1] = secondImageCopyEvent;
+		cl::Event filterG0;
+		queue.enqueueNDRangeKernel(filterG, cl::NullRange, rangeLevel0, cl::NullRange, &waitEvents2, &filterG0);
+
+		// Level 1 G
+		std::size_t sizeG1 = widthLevel1 * heightLevel1 * sizeof (cl_int4);
+		cl::Buffer bufferG1(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_WRITE, sizeG1);
+
+		filterG.setArg(0, firstImageLevel1);
+		filterG.setArg(1, secondImageLevel1);
+		filterG.setArg(2, widthLevel1);
+		filterG.setArg(3, bufferG1);
+		waitEvents2[0] = downFilterY_firstLevel0;
+		waitEvents2[1] = downFilterY_secondLevel0;
+		cl::Event filterG1;
+		queue.enqueueNDRangeKernel(filterG, cl::NullRange, rangeLevel1, cl::NullRange, &waitEvents2, &filterG1);
+
+		// Level 2 G
+		std::size_t sizeG2 = widthLevel2 * heightLevel2 * sizeof (cl_int4);
+		cl::Buffer bufferG2(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_WRITE, sizeG2);
+
+		filterG.setArg(0, firstImageLevel2);
+		filterG.setArg(1, secondImageLevel2);
+		filterG.setArg(2, widthLevel2);
+		filterG.setArg(3, bufferG2);
+		waitEvents2[0] = downFilterY_firstLevel1;
+		waitEvents2[1] = downFilterY_secondLevel1;
+		cl::Event filterG2;
+		queue.enqueueNDRangeKernel(filterG, cl::NullRange, rangeLevel2, cl::NullRange, &waitEvents2, &filterG2);
 
 		queue.finish();
 		timer.stop("down_filter_all");
@@ -172,6 +210,10 @@ int main()
 		writeProfileInfo(out, downFilterX_secondLevel1, "DownFilterX Image 2 Level 1", baseCounter);
 		writeProfileInfo(out, downFilterY_firstLevel1, "DownFilterY Image 1 Level 1", baseCounter);
 		writeProfileInfo(out, downFilterY_secondLevel1, "DownFilterY Image 2 Level 1", baseCounter);
+
+		writeProfileInfo(out, filterG0, "FilterG Level 0", baseCounter);
+		writeProfileInfo(out, filterG1, "FilterG Level 1", baseCounter);
+		writeProfileInfo(out, filterG2, "FilterG Level 2", baseCounter);
 
 		auto maxCounter = downFilterY_secondLevel1.getProfilingInfo<CL_PROFILING_COMMAND_END>() - baseCounter;
 		std::cout << "Max counter: " << maxCounter << std::endl;
