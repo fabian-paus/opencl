@@ -61,14 +61,17 @@ int main()
 		std::size_t widthLevel0 = firstImage.width();
 		std::size_t heightLevel0 = firstImage.height();
 
-		// Level 0 -> 0 (Downfilter X)
+		Timer timer;
+		timer.start();
+		// Copy images
 		cl::Image2D firstImageLevel0(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY, format, widthLevel0, heightLevel0);
 		auto firstImageCopyEvent = copyImage(queue, firstImage, firstImageLevel0);
 
 		cl::Image2D secondImageLevel0(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY, format, widthLevel0, heightLevel0);
 		auto secondImageCopyEvent = copyImage(queue, secondImage, secondImageLevel0);
 
-		cl::Image2D firstImageLevel0_X(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, format, widthLevel0, heightLevel0);
+		// Level 0 -> 0 (Downfilter X)
+		cl::Image2D firstImageLevel0_X(context, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, format, widthLevel0, heightLevel0);
 		downFilterX.setArg(0, firstImageLevel0);
 		downFilterX.setArg(1, firstImageLevel0_X);
 
@@ -77,7 +80,7 @@ int main()
 		cl::Event downFilterX_firstLevel0;
 		queue.enqueueNDRangeKernel(downFilterX, cl::NullRange, rangeLevel0, cl::NullRange, &waitEvents, &downFilterX_firstLevel0);
 
-		cl::Image2D secondImageLevel0_X(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, format, widthLevel0, heightLevel0);
+		cl::Image2D secondImageLevel0_X(context, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, format, widthLevel0, heightLevel0);
 		downFilterX.setArg(0, secondImageLevel0);
 		downFilterX.setArg(1, secondImageLevel0_X);
 
@@ -90,7 +93,7 @@ int main()
 		auto heightLevel1 = heightLevel0 / 2;
 		cl::NDRange rangeLevel1(widthLevel1, heightLevel1);
 
-		cl::Image2D firstImageLevel1(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, format, widthLevel1, heightLevel1);
+		cl::Image2D firstImageLevel1(context, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, format, widthLevel1, heightLevel1);
 		downFilterY.setArg(0, firstImageLevel0_X);
 		downFilterY.setArg(1, firstImageLevel1);
 
@@ -98,7 +101,7 @@ int main()
 		cl::Event downFilterY_firstLevel0;
 		queue.enqueueNDRangeKernel(downFilterY, cl::NullRange, rangeLevel1, cl::NullRange, &waitEvents, &downFilterY_firstLevel0);
 
-		cl::Image2D secondImageLevel1(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, format, widthLevel1, heightLevel1);
+		cl::Image2D secondImageLevel1(context, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, format, widthLevel1, heightLevel1);
 		downFilterY.setArg(0, secondImageLevel0_X);
 		downFilterY.setArg(1, secondImageLevel1);
 
@@ -107,7 +110,7 @@ int main()
 		queue.enqueueNDRangeKernel(downFilterY, cl::NullRange, rangeLevel1, cl::NullRange, &waitEvents, &downFilterY_secondLevel0);
 
 		// Level 1 -> 1 (Downfilter X)
-		cl::Image2D firstImageLevel1_X(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, format, widthLevel1, heightLevel1);
+		cl::Image2D firstImageLevel1_X(context, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, format, widthLevel1, heightLevel1);
 		downFilterX.setArg(0, firstImageLevel1);
 		downFilterX.setArg(1, firstImageLevel1_X);
 
@@ -115,7 +118,7 @@ int main()
 		cl::Event downFilterX_firstLevel1;
 		queue.enqueueNDRangeKernel(downFilterX, cl::NullRange, rangeLevel1, cl::NullRange, &waitEvents, &downFilterX_firstLevel1);
 
-		cl::Image2D secondImageLevel1_X(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, format, widthLevel1, heightLevel1);
+		cl::Image2D secondImageLevel1_X(context, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, format, widthLevel1, heightLevel1);
 		downFilterX.setArg(0, secondImageLevel1);
 		downFilterX.setArg(1, secondImageLevel1_X);
 
@@ -144,12 +147,19 @@ int main()
 		cl::Event downFilterY_secondLevel1;
 		queue.enqueueNDRangeKernel(downFilterY, cl::NullRange, rangeLevel2, cl::NullRange, &waitEvents, &downFilterY_secondLevel1);
 
+		//waitEvents[0] = downFilterY_firstLevel1;
+		//saveImage(queue, firstImageLevel2, "Level_2_Image_1.jpg", waitEvents);
+		//waitEvents[0] = downFilterY_secondLevel1;
+		//saveImage(queue, secondImageLevel2, "Level2_Image_2.jpg", waitEvents);
+
 		queue.finish();
+		timer.stop("down_filter_all");
 
 		std::ofstream out("profile.csv");
 
 		auto baseCounter = firstImageCopyEvent.getProfilingInfo<CL_PROFILING_COMMAND_QUEUED>();
 
+		out << ";Not Existing;Queued;Submitted;Running\n";
 		writeProfileInfo(out, firstImageCopyEvent, "Copy Image 1", baseCounter);
 		writeProfileInfo(out, secondImageCopyEvent, "Copy Image 2", baseCounter);
 
