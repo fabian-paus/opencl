@@ -11,5 +11,7 @@
 #include <boost/gil/extension/io/jpeg_io.hpp>
 
 #include <iostream>
+#include <fstream>
 #include <chrono>
 #include <vector>
+#include <string>
