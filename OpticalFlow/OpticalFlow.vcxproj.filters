@@ -10,6 +10,12 @@
     <ClCompile Include="stdafx.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="optical-flow.cl" />
+    <Intel_OpenCL_Build_Rules Include="optical-flow.cl" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="OpenCL Files">
+      <UniqueIdentifier>{D011BB44-1BF7-4113-997B-A081035B40D8}</UniqueIdentifier>
+      <Extensions>cl</Extensions>
+    </Filter>
   </ItemGroup>
 </Project>

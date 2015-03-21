@@ -46,7 +46,7 @@ void downfilter_y(__read_only image2d_t source,
 __kernel 
 void filter_G(__read_only image2d_t firstImage,
 			  __read_only image2d_t secondImage,
-			  int imageWidth, __global int4* G)
+			  __write_only image2d_t G)
 {
 	const int posX = get_global_id(0);
 	const int posY = get_global_id(1);
@@ -69,11 +69,5 @@ void filter_G(__read_only image2d_t firstImage,
 	}
 
 	int4 G2x2 = (int4)(Ix2, IxIy, IxIy, Iy2);
-	G[posY * imageWidth + posX] = G2x2;
-}
-
-__kernel
-void test_buffer(__write_only __global int* C)
-{
-
+	write_imagei(G, (int2)(posX, posY), G2x2);
 }
