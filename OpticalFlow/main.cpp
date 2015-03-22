@@ -98,6 +98,17 @@ public:
 
 	cl::Event const& getFinished(std::size_t level) const { return m_finished[level]; }
 
+	void writeProfile(std::ostream& out, std::string const& baseName, cl_ulong baseCounter)
+	{
+		writeProfileInfo(out, getFinished(0), baseName + " copy", baseCounter);
+
+		for (std::size_t i = 0; i < PYRAMID_HEIGHT - 1; ++i)
+		{
+			writeProfileInfo(out, m_intermediateEvents[i], baseName + " downfilter X level " + std::to_string(i + 1), baseCounter);
+			writeProfileInfo(out, getFinished(i + 1), baseName + " downfilter Y level " + std::to_string(i + 1), baseCounter);
+		}
+	}
+
 private:
 	std::array<cl::Image2D, PYRAMID_HEIGHT> m_images;
 	std::array<cl::NDRange, PYRAMID_HEIGHT> m_dimensions;
@@ -135,6 +146,14 @@ public:
 
 	cl::Event const& getFinished(std::size_t level) const { return m_finished[level]; }
 
+	void writeProfile(std::ostream& out, std::string const& baseName, cl_ulong baseCounter)
+	{
+		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
+		{
+			writeProfileInfo(out, getFinished(i), baseName + " filter G level " + std::to_string(1), baseCounter);
+		}
+	}
+
 private:
 	std::array<cl::Image2D, PYRAMID_HEIGHT> m_matrices;
 	std::array<cl::Event, PYRAMID_HEIGHT> m_finished;
@@ -171,6 +190,15 @@ public:
 	cl::Image2D const& getDerivative(std::size_t level) const { return m_derivatives[level]; }
 
 	cl::Event const& getFinished(std::size_t level) const { return m_finished[level]; }
+
+	void writeProfile(std::ostream& out, std::string const& baseName, cl_ulong baseCounter)
+	{
+		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
+		{
+			writeProfileInfo(out, m_intermediateEvents[i], baseName + " scharr hor level " + std::to_string(i), baseCounter);
+			writeProfileInfo(out, getFinished(i), baseName + " scharr ver level " + std::to_string(i), baseCounter);
+		}
+	}
 
 private:
 	std::array<cl::Image2D, PYRAMID_HEIGHT> m_derivatives;
@@ -214,7 +242,6 @@ int main()
 		Timer timer;
 		timer.start();
 
-		// Copy images to level 0
 		ImagePyramid firstImagePyramid(firstImage, context, queue, downFilterX, downFilterY);
 		ImagePyramid secondImagePyramid(secondImage, context, queue, downFilterX, downFilterY);
 
@@ -233,30 +260,12 @@ int main()
 		auto baseCounter = firstImagePyramid.getFinished(0).getProfilingInfo<CL_PROFILING_COMMAND_QUEUED>();
 
 		out << ";Not Existing;Queued;Submitted;Running\n";
-		writeProfileInfo(out, firstImagePyramid.getFinished(0), "Copy Image 1", baseCounter);
-		writeProfileInfo(out, secondImagePyramid.getFinished(0), "Copy Image 2", baseCounter);
 
-		//writeProfileInfo(out, downFilterX_firstLevel0, "DownFilterX Image 1 Level 0", baseCounter);
-		//writeProfileInfo(out, downFilterX_secondLevel0, "DownFilterX Image 2 Level 0", baseCounter);
-		//writeProfileInfo(out, downFilterY_firstLevel0, "DownFilterY Image 1 Level 0", baseCounter);
-		//writeProfileInfo(out, downFilterY_secondLevel0, "DownFilterY Image 2 Level 0", baseCounter);
-
-		//writeProfileInfo(out, downFilterX_firstLevel1, "DownFilterX Image 1 Level 1", baseCounter);
-		//writeProfileInfo(out, downFilterX_secondLevel1, "DownFilterX Image 2 Level 1", baseCounter);
-		//writeProfileInfo(out, downFilterY_firstLevel1, "DownFilterY Image 1 Level 1", baseCounter);
-		//writeProfileInfo(out, downFilterY_secondLevel1, "DownFilterY Image 2 Level 1", baseCounter);
-
-		//writeProfileInfo(out, filterG0, "FilterG Level 0", baseCounter);
-		//writeProfileInfo(out, filterG1, "FilterG Level 1", baseCounter);
-		//writeProfileInfo(out, filterG2, "FilterG Level 2", baseCounter);
-
-		//writeProfileInfo(out, scharrHorX0, "Scharr X Horizontal Level 0", baseCounter);
-		//writeProfileInfo(out, scharrVerX0, "Scharr X Vertical Level 0", baseCounter);
-		//writeProfileInfo(out, scharrHorY0, "Scharr Y Horizontal Level 0", baseCounter);
-		//writeProfileInfo(out, scharrVerY0, "Scharr Y Vertical Level 0", baseCounter);
-
-		//auto maxCounter = filterG0.getProfilingInfo<CL_PROFILING_COMMAND_END>() - baseCounter;
-		//std::cout << "Max counter: " << maxCounter << std::endl;
+		firstImagePyramid.writeProfile(out, "image 1", baseCounter);
+		secondImagePyramid.writeProfile(out, "image 2", baseCounter);
+		matrixG.writeProfile(out, "matrix", baseCounter);
+		derivativeX.writeProfile(out, "X", baseCounter);
+		derivativeY.writeProfile(out, "Y", baseCounter);
 
 		return 0;
 	}
