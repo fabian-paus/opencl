@@ -118,47 +118,6 @@ private:
 	std::array<cl::Event, PYRAMID_HEIGHT - 1> m_intermediateEvents;
 };
 
-const cl::ImageFormat G_MATRIX_FORMAT(CL_RGBA, CL_SIGNED_INT32);
-
-class GMatrixPyramid
-{
-public:
-	GMatrixPyramid(cl::Context const& context, cl::CommandQueue const& queue, cl::Kernel& filterG,
-		ImagePyramid const& first, ImagePyramid const& second)
-	{
-		std::vector<cl::Event> waitEvents(2);
-
-		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
-		{
-			m_matrices[i] = createImage(context, INTERMEDIATE_MEMORY_FLAGS, G_MATRIX_FORMAT, first.getDimension(i));
-
-			filterG.setArg(0, first.getImage(i));
-			filterG.setArg(1, second.getImage(i));
-			filterG.setArg(2, m_matrices[i]);
-
-			waitEvents[0] = first.getFinished(i);
-			waitEvents[1] = second.getFinished(i);
-			queue.enqueueNDRangeKernel(filterG, cl::NullRange, first.getDimension(i), cl::NullRange, &waitEvents, &m_finished[i]);
-		}
-	}
-
-	cl::Image2D const& getMatrix(std::size_t level) const { return m_matrices[level]; }
-
-	cl::Event const& getFinished(std::size_t level) const { return m_finished[level]; }
-
-	void writeProfile(std::ostream& out, std::string const& baseName, cl_ulong baseCounter)
-	{
-		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
-		{
-			writeProfileInfo(out, getFinished(i), baseName + " filter G level " + std::to_string(1), baseCounter);
-		}
-	}
-
-private:
-	std::array<cl::Image2D, PYRAMID_HEIGHT> m_matrices;
-	std::array<cl::Event, PYRAMID_HEIGHT> m_finished;
-};
-
 const cl::ImageFormat SCHARR_FORMAT(CL_R, CL_SIGNED_INT16);
 
 class ScharrPyramid
@@ -172,6 +131,7 @@ public:
 		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
 		{
 			auto& dimension = basePyramid.getDimension(i);
+			m_dimensions[i] = dimension;
 
 			m_intermediates[i] = createImage(context, INTERMEDIATE_MEMORY_FLAGS, SCHARR_FORMAT, dimension);
 			filterHorizontal.setArg(0, basePyramid.getImage(i));
@@ -189,6 +149,8 @@ public:
 
 	cl::Image2D const& getDerivative(std::size_t level) const { return m_derivatives[level]; }
 
+	cl::NDRange const& getDimension(std::size_t level) const { return m_dimensions[level]; }
+
 	cl::Event const& getFinished(std::size_t level) const { return m_finished[level]; }
 
 	void writeProfile(std::ostream& out, std::string const& baseName, cl_ulong baseCounter)
@@ -203,8 +165,51 @@ public:
 private:
 	std::array<cl::Image2D, PYRAMID_HEIGHT> m_derivatives;
 	std::array<cl::Image2D, PYRAMID_HEIGHT> m_intermediates;
+	std::array<cl::NDRange, PYRAMID_HEIGHT> m_dimensions;
 	std::array<cl::Event, PYRAMID_HEIGHT> m_finished;
 	std::array<cl::Event, PYRAMID_HEIGHT> m_intermediateEvents;
+};
+
+const cl::ImageFormat G_MATRIX_FORMAT(CL_RGBA, CL_SIGNED_INT32);
+
+class GMatrixPyramid
+{
+public:
+	GMatrixPyramid(cl::Context const& context, cl::CommandQueue const& queue, cl::Kernel& filterG,
+		ScharrPyramid const& derivativeX, ScharrPyramid const& derivativeY)
+	{
+		std::vector<cl::Event> waitEvents(2);
+
+		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
+		{
+			auto& dimension = derivativeX.getDimension(i);
+			m_matrices[i] = createImage(context, INTERMEDIATE_MEMORY_FLAGS, G_MATRIX_FORMAT, derivativeX.getDimension(i));
+
+			filterG.setArg(0, derivativeX.getDerivative(i));
+			filterG.setArg(1, derivativeY.getDerivative(i));
+			filterG.setArg(2, m_matrices[i]);
+
+			waitEvents[0] = derivativeX.getFinished(i);
+			waitEvents[1] = derivativeY.getFinished(i);
+			queue.enqueueNDRangeKernel(filterG, cl::NullRange, dimension, cl::NullRange, &waitEvents, &m_finished[i]);
+		}
+	}
+
+	cl::Image2D const& getMatrix(std::size_t level) const { return m_matrices[level]; }
+
+	cl::Event const& getFinished(std::size_t level) const { return m_finished[level]; }
+
+	void writeProfile(std::ostream& out, std::string const& baseName, cl_ulong baseCounter)
+	{
+		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
+		{
+			writeProfileInfo(out, getFinished(i), baseName + " filter G level " + std::to_string(i), baseCounter);
+		}
+	}
+
+private:
+	std::array<cl::Image2D, PYRAMID_HEIGHT> m_matrices;
+	std::array<cl::Event, PYRAMID_HEIGHT> m_finished;
 };
 
 int main()
@@ -243,14 +248,11 @@ int main()
 		timer.start();
 
 		ImagePyramid firstImagePyramid(firstImage, context, queue, downFilterX, downFilterY);
-		ImagePyramid secondImagePyramid(secondImage, context, queue, downFilterX, downFilterY);
-
-		//queue.finish();
-
-		GMatrixPyramid matrixG(context, queue, filterG, firstImagePyramid, secondImagePyramid);
-
 		ScharrPyramid derivativeX(context, queue, scharrHorX, scharrVerX, firstImagePyramid);
 		ScharrPyramid derivativeY(context, queue, scharrHorY, scharrVerY, firstImagePyramid);
+		ImagePyramid secondImagePyramid(secondImage, context, queue, downFilterX, downFilterY);
+
+		GMatrixPyramid matrixG(context, queue, filterG, derivativeX, derivativeY);
 
 		queue.finish();
 		timer.stop("down_filter_all");
@@ -263,9 +265,9 @@ int main()
 
 		firstImagePyramid.writeProfile(out, "image 1", baseCounter);
 		secondImagePyramid.writeProfile(out, "image 2", baseCounter);
-		matrixG.writeProfile(out, "matrix", baseCounter);
 		derivativeX.writeProfile(out, "X", baseCounter);
 		derivativeY.writeProfile(out, "Y", baseCounter);
+		matrixG.writeProfile(out, "matrix", baseCounter);
 
 		return 0;
 	}
