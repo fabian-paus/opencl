@@ -71,3 +71,62 @@ void filter_G(__read_only image2d_t firstImage,
 	int4 G2x2 = (int4)(Ix2, IxIy, IxIy, Iy2);
 	write_imagei(G, (int2)(posX, posY), G2x2);
 }
+
+__kernel 
+void scharr_x_horizontal(__read_only image2d_t source,
+						 __write_only image2d_t destination)
+{
+	const int xPos = get_global_id(0);
+    const int yPos = get_global_id(1);
+
+    int x0 = read_imagei(source, sampler, (int2)(xPos - 1, yPos)).x;
+    int x2 = read_imagei(source, sampler, (int2)(xPos + 1, yPos)).x;
+    int output = x2 - x0; 
+
+	write_imagei(destination, (int2)(xPos, yPos), (int4)(output, 0, 0, 0)); 
+}
+
+__kernel 
+void scharr_x_vertical(__read_only image2d_t source,
+	     			   __write_only image2d_t destination)
+{
+	const int xPos = get_global_id(0);
+    const int yPos = get_global_id(1);
+
+    int x0 = read_imagei(source, sampler, (int2)(xPos, yPos - 1)).x;
+    int x1 = read_imagei(source, sampler, (int2)(xPos, yPos)).x;
+    int x2 = read_imagei(source, sampler, (int2)(xPos, yPos + 1)).x;
+
+    int output = 3 * x0 + 10 * x1 + 3 * x2;
+	write_imagei(destination, (int2)(xPos, yPos), (int4)(output, 0, 0, 0)); 
+}
+
+__kernel 
+void scharr_y_horizontal(__read_only image2d_t source,
+	     			     __write_only image2d_t destination)
+{
+	const int xPos = get_global_id(0);
+    const int yPos = get_global_id(1);
+
+    int x0 = read_imagei(source, sampler, (int2)(xPos - 1, yPos)).x;
+    int x1 = read_imagei(source, sampler, (int2)(xPos, yPos)).x;
+    int x2 = read_imagei(source, sampler, (int2)(xPos + 1, yPos)).x;
+
+    int output = 3 * x0 + 10 * x1 + 3 * x2;
+	write_imagei(destination, (int2)(xPos, yPos), (int4)(output, 0, 0, 0)); 
+}
+
+__kernel 
+void scharr_y_vertical(__read_only image2d_t source,
+					   __write_only image2d_t destination)
+{
+	const int xPos = get_global_id(0);
+    const int yPos = get_global_id(1);
+
+    int x0 = read_imagei(source, sampler, (int2)(xPos, yPos - 1)).x;
+    int x2 = read_imagei(source, sampler, (int2)(xPos, yPos + 1)).x;
+    int output = x2 - x0; 
+
+	write_imagei(destination, (int2)(xPos, yPos), (int4)(output, 0, 0, 0)); 
+}
+

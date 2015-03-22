@@ -66,6 +66,10 @@ int main()
 		cl::Kernel downFilterX(program, "downfilter_x");
 		cl::Kernel downFilterY(program, "downfilter_y");
 		cl::Kernel filterG(program, "filter_G");
+		cl::Kernel scharrHorX(program, "scharr_x_horizontal");
+		cl::Kernel scharrVerX(program, "scharr_x_vertical");
+		cl::Kernel scharrHorY(program, "scharr_y_horizontal");
+		cl::Kernel scharrVerY(program, "scharr_y_vertical");
 
 		cl::ImageFormat format(CL_R, CL_UNSIGNED_INT8);
 		std::size_t widthLevel0 = firstImage.width();
@@ -184,7 +188,7 @@ int main()
 		cl::Event filterG1;
 		queue.enqueueNDRangeKernel(filterG, cl::NullRange, rangeLevel1, cl::NullRange, &waitEvents2, &filterG1);
 
-		//// Level 2 G
+		// Level 2 G
 		cl::Image2D imageG2(context, INTERMEDIATE_MEMORY_FLAGS, formatG, widthLevel2, heightLevel2);
 
 		filterG.setArg(0, firstImageLevel2);
@@ -194,6 +198,44 @@ int main()
 		waitEvents2[1] = downFilterY_secondLevel1;
 		cl::Event filterG2;
 		queue.enqueueNDRangeKernel(filterG, cl::NullRange, rangeLevel2, cl::NullRange, &waitEvents2, &filterG2);
+
+		cl::ImageFormat formatScharr(CL_R, CL_SIGNED_INT16);
+
+		// Level 0 Scharr X Horizontal
+		cl::Image2D imageScharrHorX0(context, INTERMEDIATE_MEMORY_FLAGS, formatScharr, widthLevel0, heightLevel0);
+
+		scharrHorX.setArg(0, firstImageLevel0);
+		scharrHorX.setArg(1, imageScharrHorX0);
+		waitEvents[0] = firstImageCopyEvent;
+		cl::Event scharrHorX0;
+		queue.enqueueNDRangeKernel(scharrHorX, cl::NullRange, rangeLevel0, cl::NullRange, &waitEvents, &scharrHorX0);
+
+		// Level 0 Scharr X Vertical
+		cl::Image2D imageScharrVerX0(context, INTERMEDIATE_MEMORY_FLAGS, formatScharr, widthLevel0, heightLevel0);
+
+		scharrVerX.setArg(0, imageScharrHorX0);
+		scharrVerX.setArg(1, imageScharrVerX0);
+		waitEvents[0] = scharrHorX0;
+		cl::Event scharrVerX0;
+		queue.enqueueNDRangeKernel(scharrVerX, cl::NullRange, rangeLevel0, cl::NullRange, &waitEvents, &scharrVerX0);
+
+		// Level 0 Scharr Y Horizontal
+		cl::Image2D imageScharrHorY0(context, INTERMEDIATE_MEMORY_FLAGS, formatScharr, widthLevel0, heightLevel0);
+
+		scharrHorY.setArg(0, firstImageLevel0);
+		scharrHorY.setArg(1, imageScharrHorY0);
+		waitEvents[0] = firstImageCopyEvent;
+		cl::Event scharrHorY0;
+		queue.enqueueNDRangeKernel(scharrHorY, cl::NullRange, rangeLevel0, cl::NullRange, &waitEvents, &scharrHorY0);
+
+		// Level 0 Scharr Y Vertical
+		cl::Image2D imageScharrVerY0(context, INTERMEDIATE_MEMORY_FLAGS, formatScharr, widthLevel0, heightLevel0);
+
+		scharrVerY.setArg(0, imageScharrHorY0);
+		scharrVerY.setArg(1, imageScharrVerY0);
+		waitEvents[0] = scharrHorX0;
+		cl::Event scharrVerY0;
+		queue.enqueueNDRangeKernel(scharrVerY, cl::NullRange, rangeLevel0, cl::NullRange, &waitEvents, &scharrVerY0);
 
 		queue.finish();
 		timer.stop("down_filter_all");
@@ -217,10 +259,15 @@ int main()
 		writeProfileInfo(out, downFilterY_secondLevel1, "DownFilterY Image 2 Level 1", baseCounter);
 
 		writeProfileInfo(out, filterG0, "FilterG Level 0", baseCounter);
-//		writeProfileInfo(out, filterG1, "FilterG Level 1", baseCounter);
-//		writeProfileInfo(out, filterG2, "FilterG Level 2", baseCounter);
+		writeProfileInfo(out, filterG1, "FilterG Level 1", baseCounter);
+		writeProfileInfo(out, filterG2, "FilterG Level 2", baseCounter);
 
-		auto maxCounter = downFilterY_secondLevel1.getProfilingInfo<CL_PROFILING_COMMAND_END>() - baseCounter;
+		writeProfileInfo(out, scharrHorX0, "Scharr X Horizontal Level 0", baseCounter);
+		writeProfileInfo(out, scharrVerX0, "Scharr X Vertical Level 0", baseCounter);
+		writeProfileInfo(out, scharrHorY0, "Scharr Y Horizontal Level 0", baseCounter);
+		writeProfileInfo(out, scharrVerY0, "Scharr Y Vertical Level 0", baseCounter);
+
+		auto maxCounter = filterG0.getProfilingInfo<CL_PROFILING_COMMAND_END>() - baseCounter;
 		std::cout << "Max counter: " << maxCounter << std::endl;
 
 		return 0;
