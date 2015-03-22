@@ -57,7 +57,6 @@ class ImagePyramid
 public:
 	ImagePyramid(gil::gray8_image_t const& image, cl::Context const& context, cl::CommandQueue const& queue,
 		cl::Kernel& downFilterX, cl::Kernel& downFilterY)
-		: m_waitEvents(1)
 	{
 		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
 		{
@@ -74,32 +73,32 @@ public:
 		m_finished[0] = copyImage(queue, image, m_images[0]);
 
 		// Downfiltering for levels 1 and 2
+		std::vector<cl::Event> waitEvents(1);
+
 		for (std::size_t i = 0; i < PYRAMID_HEIGHT - 1; ++i)
 		{
 			m_intermediateImages[i] = createImage(context, INTERMEDIATE_MEMORY_FLAGS, IMAGE_FORMAT, m_dimensions[i]);
 			downFilterX.setArg(0, m_images[i]);
 			downFilterX.setArg(1, m_intermediateImages[i]);
 
-			m_waitEvents[0] = m_finished[i];
-			queue.enqueueNDRangeKernel(downFilterX, cl::NullRange, m_dimensions[i], cl::NullRange, &m_waitEvents, &m_intermediateEvents[i]);
+			waitEvents[0] = m_finished[i];
+			queue.enqueueNDRangeKernel(downFilterX, cl::NullRange, m_dimensions[i], cl::NullRange, &waitEvents, &m_intermediateEvents[i]);
 
 			downFilterY.setArg(0, m_intermediateImages[i]);
 			downFilterY.setArg(1, m_images[i + 1]);
 
-			m_waitEvents[0] = m_intermediateEvents[i];
-			queue.enqueueNDRangeKernel(downFilterY, cl::NullRange, m_dimensions[i + 1], cl::NullRange, &m_waitEvents, &m_finished[i + 1]);
+			waitEvents[0] = m_intermediateEvents[i];
+			queue.enqueueNDRangeKernel(downFilterY, cl::NullRange, m_dimensions[i + 1], cl::NullRange, &waitEvents, &m_finished[i + 1]);
 		}
 	}
 
 	cl::Image2D const& getImage(std::size_t level) const { return m_images[level]; }
 
-	cl::NDRange const& getDimenstion(std::size_t level) const { return m_dimensions[level]; }
+	cl::NDRange const& getDimension(std::size_t level) const { return m_dimensions[level]; }
 
 	cl::Event const& getFinished(std::size_t level) const { return m_finished[level]; }
 
 private:
-	std::vector<cl::Event> m_waitEvents;
-
 	std::array<cl::Image2D, PYRAMID_HEIGHT> m_images;
 	std::array<cl::NDRange, PYRAMID_HEIGHT> m_dimensions;
 	std::array<cl::Event, PYRAMID_HEIGHT> m_finished;
@@ -115,19 +114,20 @@ class GMatrixPyramid
 public:
 	GMatrixPyramid(cl::Context const& context, cl::CommandQueue const& queue, cl::Kernel& filterG,
 		ImagePyramid const& first, ImagePyramid const& second)
-		: m_waitEvents(2)
 	{
+		std::vector<cl::Event> waitEvents(2);
+
 		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
 		{
-			m_matrices[i] = createImage(context, INTERMEDIATE_MEMORY_FLAGS, G_MATRIX_FORMAT, first.getDimenstion(i));
+			m_matrices[i] = createImage(context, INTERMEDIATE_MEMORY_FLAGS, G_MATRIX_FORMAT, first.getDimension(i));
 
 			filterG.setArg(0, first.getImage(i));
 			filterG.setArg(1, second.getImage(i));
 			filterG.setArg(2, m_matrices[i]);
 
-			m_waitEvents[0] = first.getFinished(i);
-			m_waitEvents[1] = second.getFinished(i);
-			queue.enqueueNDRangeKernel(filterG, cl::NullRange, first.getDimenstion(i), cl::NullRange, &m_waitEvents, &m_finished[i]);
+			waitEvents[0] = first.getFinished(i);
+			waitEvents[1] = second.getFinished(i);
+			queue.enqueueNDRangeKernel(filterG, cl::NullRange, first.getDimension(i), cl::NullRange, &waitEvents, &m_finished[i]);
 		}
 	}
 
@@ -136,9 +136,47 @@ public:
 	cl::Event const& getFinished(std::size_t level) const { return m_finished[level]; }
 
 private:
-	std::vector<cl::Event> m_waitEvents;
 	std::array<cl::Image2D, PYRAMID_HEIGHT> m_matrices;
 	std::array<cl::Event, PYRAMID_HEIGHT> m_finished;
+};
+
+const cl::ImageFormat SCHARR_FORMAT(CL_R, CL_SIGNED_INT16);
+
+class ScharrPyramid
+{
+public:
+	ScharrPyramid(cl::Context const& context, cl::CommandQueue const& queue, cl::Kernel& filterHorizontal, cl::Kernel& filterVertical,
+		ImagePyramid const& basePyramid)
+	{
+		std::vector<cl::Event> waitEvents(1);
+
+		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
+		{
+			auto& dimension = basePyramid.getDimension(i);
+
+			m_intermediates[i] = createImage(context, INTERMEDIATE_MEMORY_FLAGS, SCHARR_FORMAT, dimension);
+			filterHorizontal.setArg(0, basePyramid.getImage(i));
+			filterHorizontal.setArg(1, m_intermediates[i]);
+			waitEvents[0] = basePyramid.getFinished(i);
+			queue.enqueueNDRangeKernel(filterHorizontal, cl::NullRange, dimension, cl::NullRange, &waitEvents, &m_intermediateEvents[i]);
+
+			m_derivatives[i] = createImage(context, INTERMEDIATE_MEMORY_FLAGS, SCHARR_FORMAT, dimension);
+			filterVertical.setArg(0, m_intermediates[i]);
+			filterVertical.setArg(1, m_derivatives[i]);
+			waitEvents[0] = m_intermediateEvents[i];
+			queue.enqueueNDRangeKernel(filterVertical, cl::NullRange, dimension, cl::NullRange, &waitEvents, &m_finished[i]);
+		}
+	}
+
+	cl::Image2D const& getDerivative(std::size_t level) const { return m_derivatives[level]; }
+
+	cl::Event const& getFinished(std::size_t level) const { return m_finished[level]; }
+
+private:
+	std::array<cl::Image2D, PYRAMID_HEIGHT> m_derivatives;
+	std::array<cl::Image2D, PYRAMID_HEIGHT> m_intermediates;
+	std::array<cl::Event, PYRAMID_HEIGHT> m_finished;
+	std::array<cl::Event, PYRAMID_HEIGHT> m_intermediateEvents;
 };
 
 int main()
@@ -180,49 +218,12 @@ int main()
 		ImagePyramid firstImagePyramid(firstImage, context, queue, downFilterX, downFilterY);
 		ImagePyramid secondImagePyramid(secondImage, context, queue, downFilterX, downFilterY);
 
-		queue.finish();
+		//queue.finish();
 
 		GMatrixPyramid matrixG(context, queue, filterG, firstImagePyramid, secondImagePyramid);
 
-		cl::ImageFormat formatScharr(CL_R, CL_SIGNED_INT16);
-
-		// Level 0 Scharr X Horizontal
-		cl::Image2D imageScharrHorX0(context, INTERMEDIATE_MEMORY_FLAGS, formatScharr, widthLevel0, heightLevel0);
-
-		std::vector<cl::Event> waitEvents(1);
-
-		scharrHorX.setArg(0, firstImagePyramid.getImage(0));
-		scharrHorX.setArg(1, imageScharrHorX0);
-		waitEvents[0] = firstImagePyramid.getFinished(0);
-		cl::Event scharrHorX0;
-		queue.enqueueNDRangeKernel(scharrHorX, cl::NullRange, firstImagePyramid.getDimenstion(0), cl::NullRange, &waitEvents, &scharrHorX0);
-
-		// Level 0 Scharr X Vertical
-		cl::Image2D imageScharrVerX0(context, INTERMEDIATE_MEMORY_FLAGS, formatScharr, widthLevel0, heightLevel0);
-
-		scharrVerX.setArg(0, imageScharrHorX0);
-		scharrVerX.setArg(1, imageScharrVerX0);
-		waitEvents[0] = scharrHorX0;
-		cl::Event scharrVerX0;
-		queue.enqueueNDRangeKernel(scharrVerX, cl::NullRange, firstImagePyramid.getDimenstion(0), cl::NullRange, &waitEvents, &scharrVerX0);
-
-		// Level 0 Scharr Y Horizontal
-		cl::Image2D imageScharrHorY0(context, INTERMEDIATE_MEMORY_FLAGS, formatScharr, widthLevel0, heightLevel0);
-
-		scharrHorY.setArg(0, firstImagePyramid.getImage(0));
-		scharrHorY.setArg(1, imageScharrHorY0);
-		waitEvents[0] = firstImagePyramid.getFinished(0);
-		cl::Event scharrHorY0;
-		queue.enqueueNDRangeKernel(scharrHorY, cl::NullRange, firstImagePyramid.getDimenstion(0), cl::NullRange, &waitEvents, &scharrHorY0);
-
-		// Level 0 Scharr Y Vertical
-		cl::Image2D imageScharrVerY0(context, INTERMEDIATE_MEMORY_FLAGS, formatScharr, widthLevel0, heightLevel0);
-
-		scharrVerY.setArg(0, imageScharrHorY0);
-		scharrVerY.setArg(1, imageScharrVerY0);
-		waitEvents[0] = scharrHorX0;
-		cl::Event scharrVerY0;
-		queue.enqueueNDRangeKernel(scharrVerY, cl::NullRange, firstImagePyramid.getDimenstion(0), cl::NullRange, &waitEvents, &scharrVerY0);
+		ScharrPyramid derivativeX(context, queue, scharrHorX, scharrVerX, firstImagePyramid);
+		ScharrPyramid derivativeY(context, queue, scharrHorY, scharrVerY, firstImagePyramid);
 
 		queue.finish();
 		timer.stop("down_filter_all");
