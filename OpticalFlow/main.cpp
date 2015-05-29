@@ -7,6 +7,7 @@
 #include <iostream>
 #include <fstream>
 #include <array>
+#include <cstdint>
 
 namespace gil = boost::gil;
 
@@ -40,7 +41,7 @@ cl::Image2D createImage(cl::Context const& context, cl_mem_flags memFlags, cl::I
 	return cl::Image2D(context, memFlags, format, dimension[0], dimension[1]);
 }
 
-#ifdef NDEBUG
+#if 0 // NDEBUG
 const cl_mem_flags INTERMEDIATE_MEMORY_FLAGS = CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS;
 const cl_mem_flags INPUT_MEMORY_FLAGS = CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_WRITE_ONLY;
 #else
@@ -48,6 +49,7 @@ const cl_mem_flags INPUT_MEMORY_FLAGS = CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR
 const cl_mem_flags INTERMEDIATE_MEMORY_FLAGS = CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR;
 const cl_mem_flags INPUT_MEMORY_FLAGS = CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_ONLY;
 #endif
+const cl_mem_flags OUTPUT_MEMORY_FLAGS = CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_WRITE;
 
 const std::size_t PYRAMID_HEIGHT = 3;
 const cl::ImageFormat IMAGE_FORMAT(CL_R, CL_UNSIGNED_INT8);
@@ -212,6 +214,72 @@ private:
 	std::array<cl::Event, PYRAMID_HEIGHT> m_finished;
 };
 
+const cl::ImageFormat FLOW_VECTOR_FORMAT(CL_RG, CL_FLOAT);
+
+// Helper to get next up value for integer division
+static inline size_t DivUp(size_t dividend, size_t divisor)
+{
+	return (dividend % divisor == 0) ? (dividend / divisor) : (dividend / divisor + 1);
+}
+
+class FlowPyramid
+{
+public:
+	FlowPyramid(cl::Context const& context, cl::CommandQueue const& queue, cl::Kernel& calcFlow,
+		ImagePyramid const& first, ImagePyramid const& second,
+		ScharrPyramid const& derivativeX, ScharrPyramid const& derivativeY,
+		GMatrixPyramid const& matrixG)
+	{
+		std::vector<cl::Event> waitEvents(1);
+
+		for (int i = PYRAMID_HEIGHT - 1; i >= 0; --i)
+		{
+			auto& dimension = first.getDimension(i);
+			m_vectors[i] = createImage(context, OUTPUT_MEMORY_FLAGS, FLOW_VECTOR_FORMAT, dimension);
+
+			calcFlow.setArg(0, first.getImage(i));
+			calcFlow.setArg(1, derivativeX.getDerivative(i));
+			calcFlow.setArg(2, derivativeY.getDerivative(i));
+			calcFlow.setArg(3, matrixG.getMatrix(i));
+			calcFlow.setArg(4, second.getImage(i));
+			calcFlow.setArg(5, (i == PYRAMID_HEIGHT - 1) ? 0 : 1);
+			calcFlow.setArg(6, (i == PYRAMID_HEIGHT - 1) ? m_vectors[i] : m_vectors[i + 1]);
+			calcFlow.setArg(7, m_vectors[i]);
+			calcFlow.setArg(8, (std::int32_t)dimension[0]);
+			calcFlow.setArg(9, (std::int32_t)dimension[1]);
+			
+			waitEvents[0] = matrixG.getFinished(i);
+			if (i != PYRAMID_HEIGHT - 1)
+			{
+				waitEvents.resize(2);
+				waitEvents[1] = m_finished[i + 1];
+			}
+
+			auto localWorkSize = cl::NDRange(16, 8);
+			auto globalWorkSize = cl::NDRange(localWorkSize[0] * DivUp(dimension[0], localWorkSize[0]),
+				localWorkSize[1] * DivUp(dimension[1], localWorkSize[1]));
+
+			queue.enqueueNDRangeKernel(calcFlow, cl::NullRange, globalWorkSize, localWorkSize, &waitEvents, &m_finished[i]);
+		}
+	}
+
+	cl::Image2D const& getVector(std::size_t level) const { return m_vectors[level]; }
+
+	cl::Event const& getFinished(std::size_t level) const { return m_finished[level]; }
+
+	void writeProfile(std::ostream& out, std::string const& baseName, cl_ulong baseCounter)
+	{
+		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
+		{
+			writeProfileInfo(out, getFinished(i), baseName + " calc flow " + std::to_string(i), baseCounter);
+		}
+	}
+
+private:
+	std::array<cl::Image2D, PYRAMID_HEIGHT> m_vectors;
+	std::array<cl::Event, PYRAMID_HEIGHT> m_finished;
+};
+
 int main()
 {
 	try
@@ -226,19 +294,20 @@ int main()
 		}
 
 		auto platform = choosePlatform();
-		auto device = chooseDevice(platform, CL_DEVICE_TYPE_CPU);
+		auto device = chooseDevice(platform, CL_DEVICE_TYPE_ALL);
 
 		cl::Context context(device);
-		cl::CommandQueue queue(context, device, CL_QUEUE_PROFILING_ENABLE | CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE);
+		cl::CommandQueue queue(context, device, CL_QUEUE_PROFILING_ENABLE);
 
 		auto program = buildProgram(context, device, PROGRAM_FILE);
 		cl::Kernel downFilterX(program, "downfilter_x");
 		cl::Kernel downFilterY(program, "downfilter_y");
-		cl::Kernel filterG(program, "filter_G");
-		cl::Kernel scharrHorX(program, "scharr_x_horizontal");
-		cl::Kernel scharrVerX(program, "scharr_x_vertical");
-		cl::Kernel scharrHorY(program, "scharr_y_horizontal");
-		cl::Kernel scharrVerY(program, "scharr_y_vertical");
+		//cl::Kernel filterG(program, "filter_G");
+		//cl::Kernel scharrHorX(program, "scharr_x_horizontal");
+		//cl::Kernel scharrVerX(program, "scharr_x_vertical");
+		//cl::Kernel scharrHorY(program, "scharr_y_horizontal");
+		//cl::Kernel scharrVerY(program, "scharr_y_vertical");
+		//cl::Kernel calcFlow(program, "optical_flow_2");
 
 		cl::ImageFormat format(CL_R, CL_UNSIGNED_INT8);
 		std::size_t widthLevel0 = firstImage.width();
@@ -248,11 +317,19 @@ int main()
 		timer.start();
 
 		ImagePyramid firstImagePyramid(firstImage, context, queue, downFilterX, downFilterY);
-		ScharrPyramid derivativeX(context, queue, scharrHorX, scharrVerX, firstImagePyramid);
-		ScharrPyramid derivativeY(context, queue, scharrHorY, scharrVerY, firstImagePyramid);
-		ImagePyramid secondImagePyramid(secondImage, context, queue, downFilterX, downFilterY);
+		//ScharrPyramid derivativeX(context, queue, scharrHorX, scharrVerX, firstImagePyramid);
+		//ScharrPyramid derivativeY(context, queue, scharrHorY, scharrVerY, firstImagePyramid);
+		//ImagePyramid secondImagePyramid(secondImage, context, queue, downFilterX, downFilterY);
 
-		GMatrixPyramid matrixG(context, queue, filterG, derivativeX, derivativeY);
+		//GMatrixPyramid matrixG(context, queue, filterG, derivativeX, derivativeY);
+		//FlowPyramid flow(context, queue, calcFlow,
+		//	firstImagePyramid, secondImagePyramid, derivativeX, derivativeY, matrixG);
+
+		for (int i = 0; i < 3; ++i)
+		{
+			auto& image = firstImagePyramid.getImage(i);
+			saveImage(queue, image, "first-scaled-" + std::to_string(i) + ".jpg", { firstImagePyramid.getFinished(i) });
+		}
 
 		queue.finish();
 		timer.stop("down_filter_all");
@@ -264,10 +341,11 @@ int main()
 		out << ";Not Existing;Queued;Submitted;Running\n";
 
 		firstImagePyramid.writeProfile(out, "image 1", baseCounter);
-		secondImagePyramid.writeProfile(out, "image 2", baseCounter);
-		derivativeX.writeProfile(out, "X", baseCounter);
-		derivativeY.writeProfile(out, "Y", baseCounter);
-		matrixG.writeProfile(out, "matrix", baseCounter);
+		//secondImagePyramid.writeProfile(out, "image 2", baseCounter);
+		//derivativeX.writeProfile(out, "X", baseCounter);
+		//derivativeY.writeProfile(out, "Y", baseCounter);
+		//matrixG.writeProfile(out, "matrix", baseCounter);
+		//flow.writeProfile(out, "optical", baseCounter);
 
 		return 0;
 	}
