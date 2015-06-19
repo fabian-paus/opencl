@@ -11,8 +11,8 @@
 
 namespace gil = boost::gil;
 
-const std::string FIRST_IMAGE = "images/car-1.jpg";
-const std::string SECOND_IMAGE = "images/car-2.jpg";
+const std::string FIRST_IMAGE = "images/frame10.jpg";
+const std::string SECOND_IMAGE = "images/frame11.jpg";
 const std::string PROGRAM_FILE = "optical-flow.cl";
 
 void saveImage(cl::CommandQueue const& queue, cl::Image2D const& source, std::string targetFile, std::vector<cl::Event> const& waitEvents)
@@ -63,23 +63,22 @@ struct RangeColorConverter1
 	int m_min, m_max;
 };
 
-template <int Index>
-struct RangeColorConverterT
+struct RangeColorConverterI
 {
-	RangeColorConverterT(int minValue, int maxValue)
-		: m_min(minValue), m_max(maxValue)
+	RangeColorConverterI(int index, int minValue, int maxValue)
+		: m_index(index), m_min(minValue), m_max(maxValue)
 	{ }
 
 	template <typename SrcT>
 	void operator () (SrcT const& src, gil::gray8_pixel_t& dst) const
 	{
 		const float range = (float)(m_max - m_min);
-		int value = src[Index] - m_min;
+		int value = src[m_index] - m_min;
 		float t = (float)value / range;
 		dst[0] = (uint8_t)(t * 255);
 	}
 
-	int m_min, m_max;
+	int m_index, m_min, m_max;
 };
 
 void saveScharrImage(cl::CommandQueue const& queue, cl::Image2D const& source, std::string targetFile, std::vector<cl::Event> const& waitEvents)
@@ -111,7 +110,7 @@ void saveScharrImage(cl::CommandQueue const& queue, cl::Image2D const& source, s
 	queue.enqueueUnmapMemObject(source, mappedImageData);
 }
 
-void saveGMatrix(cl::CommandQueue const& queue, cl::Image2D const& source, std::string targetFile, std::vector<cl::Event> const& waitEvents)
+void saveGMatrix(cl::CommandQueue const& queue, cl::Image2D const& source, std::string targetFile, std::vector<cl::Event> const& waitEvents, int index)
 {
 	TimedEvent event("save_image");
 	auto mappedImage = mapImage(queue, source, CL_MAP_READ, &waitEvents);
@@ -120,19 +119,18 @@ void saveGMatrix(cl::CommandQueue const& queue, cl::Image2D const& source, std::
 	auto height = source.getImageInfo<CL_IMAGE_HEIGHT>();
 	auto view = gil::interleaved_view(width, height, mappedImageData, mappedImage.rowSize);
 
-	//boost::gil::gray8_image_t targetImage(width, height);
-	//boost::gil::copy_and_convert_pixels(view, boost::gil::view(targetImage));
 	int32_t minC = INT32_MAX;
 	int32_t maxC = INT32_MIN;
 	std::function<void(gil::rgba32s_pixel_t const& pix)> minMax = [&](gil::rgba32s_pixel_t const& pix)
 	{
-		if (pix[3] < minC)
-			minC = pix[3];
-		else if (pix[3] > maxC)
-			maxC = pix[3];
+		auto value = pix[index];
+		if (value < minC)
+			minC = value;
+		else if (value > maxC)
+			maxC = value;
 	};
 	boost::gil::for_each_pixel(view, minMax);
-	RangeColorConverterT<3> converter(minC, maxC);
+	RangeColorConverterI converter(index, minC, maxC);
 	auto rawPixel = view(1, 0);
 	auto colorConverted = boost::gil::color_converted_view<boost::gil::gray8_pixel_t>(view, converter);
 	auto convertedPixel = colorConverted(1, 0);
@@ -465,7 +463,10 @@ int main()
 		for (int i = 0; i < 3; ++i)
 		{
 			auto& image = matrixG.getMatrix(i);
-			saveGMatrix(queue, image, "output/g-matrix-" + std::to_string(i) + ".jpg", { derivativeY.getFinished(i) });
+			saveGMatrix(queue, image, "output/g-matrix-0-" + std::to_string(i) + ".jpg", { derivativeY.getFinished(i) }, 0);
+			saveGMatrix(queue, image, "output/g-matrix-1-" + std::to_string(i) + ".jpg", { derivativeY.getFinished(i) }, 1);
+			saveGMatrix(queue, image, "output/g-matrix-2-" + std::to_string(i) + ".jpg", { derivativeY.getFinished(i) }, 2);
+			saveGMatrix(queue, image, "output/g-matrix-3-" + std::to_string(i) + ".jpg", { derivativeY.getFinished(i) }, 3);
 		}
 
 

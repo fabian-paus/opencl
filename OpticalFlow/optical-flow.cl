@@ -147,7 +147,7 @@ __kernel void optical_flow(
     int guess_width,
 	int guess_height )
 {
-    // Create sampler objects.  One is for nearest neighbour, the other fo
+    // Create sampler objects.  One is for nearest neighbour, the other for
     // bilinear interpolation
     sampler_t bilinSampler = CLK_NORMALIZED_COORDS_FALSE |
                            CLK_ADDRESS_CLAMP_TO_EDGE |
@@ -156,7 +156,7 @@ __kernel void optical_flow(
                            CLK_ADDRESS_CLAMP_TO_EDGE |
                            CLK_FILTER_NEAREST ;
 
-    // Image indices. Note for the texture, we offset by 0.5 to use the centre
+    // Image indices. Note for the texture, we offset by 0.5 to use the center
     // of the texel. 
     int2 iIidx = { get_global_id(0), get_global_id(1)};
     float2 Iidx = { get_global_id(0)+0.5, get_global_id(1)+0.5 };
@@ -192,7 +192,7 @@ __kernel void optical_flow(
 
     // for large motions we can approximate them faster by applying gain to the motion
     float gain = 4.f;
-    for (int k=0 ; k < 8 ; k++)
+    for (int k = 0; k < 8; k++)
 	{
         float2 Jidx = { Iidx.x + g.x + v.x, Iidx.y + g.y + v.y };
         float2 b = {0,0};
