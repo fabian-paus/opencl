@@ -192,7 +192,7 @@ __kernel void optical_flow(
 
     // for large motions we can approximate them faster by applying gain to the motion
     float gain = 4.f;
-    for (int k = 0; k < 8; k++)
+    for (int k = 0; k < 32; k++)
 	{
         float2 Jidx = { Iidx.x + g.x + v.x, Iidx.y + g.y + v.y };
         float2 b = {0,0};

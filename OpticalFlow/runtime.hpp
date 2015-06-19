@@ -1,7 +1,23 @@
 #pragma once
 
+#define __CL_ENABLE_EXCEPTIONS
+#ifdef _WIN32
+#define CL_USE_DEPRECATED_OPENCL_2_0_APIS
+#else
+#include <CL/cl.h>
+#undef CL_VERSION_1_2
+#undef CL_VERSION_2_0
+#define CL_USE_DEPRECATED_OPENCL_1_1_APIS
+#undef CL_EXT_SUFFIX__VERSION_1_1_DEPRECATED
+#undef CL_EXT_PREFIX__VERSION_1_1_DEPRECATED
+#define CL_EXT_SUFFIX__VERSION_1_1_DEPRECATED
+#define CL_EXT_PREFIX__VERSION_1_1_DEPRECATED
+#endif
 #include <CL/cl.hpp>
+
 #include <boost/gil/image.hpp>
+#include <boost/gil/gray.hpp>
+#include <boost/gil/typedefs.hpp>
 #include <string>
 #include <chrono>
 

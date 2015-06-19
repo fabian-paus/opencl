@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <CL/cl.hpp>
+#include "runtime.hpp"
 
 #include <boost/gil/image.hpp>
 #include <boost/gil/extension/io/jpeg_io.hpp>

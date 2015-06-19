@@ -3,6 +3,7 @@
 #include <boost/gil/extension/io/jpeg_io.hpp>
 #include <vector>
 #include <iostream>
+#include <fstream>
 
 Timer::Timer() 
 	: m_start() 

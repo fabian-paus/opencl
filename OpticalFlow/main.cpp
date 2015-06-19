@@ -1,8 +1,7 @@
 #include "runtime.hpp"
 
-#include <CL/cl.hpp>
-
 #include <boost/gil/image.hpp>
+#include <boost/gil/extension/io/jpeg_io.hpp>
 
 #include <iostream>
 #include <fstream>
@@ -81,6 +80,25 @@ struct RangeColorConverterI
 	int m_index, m_min, m_max;
 };
 
+struct RangeColorConverterF
+{
+	RangeColorConverterF(int index, float minValue, float maxValue)
+		: m_index(index), m_min(minValue), m_max(maxValue)
+	{ }
+
+	template <typename SrcT>
+	void operator () (SrcT const& src, gil::gray8_pixel_t& dst) const
+	{
+		const float range = (float)(m_max - m_min);
+		float value = src[m_index] - m_min;
+		float t = (float)value / range;
+		dst[0] = (uint8_t)(t * 255);
+	}
+
+	int m_index;
+	float m_min, m_max;
+};
+
 void saveScharrImage(cl::CommandQueue const& queue, cl::Image2D const& source, std::string targetFile, std::vector<cl::Event> const& waitEvents)
 {
 	TimedEvent event("save_image");
@@ -134,6 +152,39 @@ void saveGMatrix(cl::CommandQueue const& queue, cl::Image2D const& source, std::
 	auto rawPixel = view(1, 0);
 	auto colorConverted = boost::gil::color_converted_view<boost::gil::gray8_pixel_t>(view, converter);
 	auto convertedPixel = colorConverted(1, 0);
+	jpeg_write_view(targetFile, colorConverted);
+	queue.enqueueUnmapMemObject(source, mappedImageData);
+}
+
+void saveFlow(cl::CommandQueue const& queue, cl::Image2D const& source, std::string targetFile, std::vector<cl::Event> const& waitEvents, int index)
+{
+	TimedEvent event("save_image");
+	auto mappedImage = mapImage(queue, source, CL_MAP_READ, &waitEvents);
+	auto* mappedImageData = (gil::gray32f_pixel_t*)mappedImage.data;
+	auto width = source.getImageInfo<CL_IMAGE_WIDTH>();
+	auto height = source.getImageInfo<CL_IMAGE_HEIGHT>();
+	std::vector<gil::gray32f_pixel_t> oneChannel(width * height);
+	for (int i = 0; i < width * height; ++i)
+	{
+		oneChannel[i] = mappedImageData[2 * i + index];
+	}
+
+	auto rowSize = mappedImage.rowSize / 2;
+	auto view = gil::interleaved_view(width, height, oneChannel.data(), rowSize);
+
+	float minC = -1000.0f;
+	float maxC = +1000.0f;
+	//std::function<void(gil::gray32f_pixel_t const& pix)> minMax = [&](gil::gray32f_pixel_t const& pix)
+	//{
+	//	auto value = pix[0];
+	//	if (value < minC)
+	//		minC = value;
+	//	else if (value > maxC)
+	//		maxC = value;
+	//};
+	//boost::gil::for_each_pixel(view, minMax);
+	RangeColorConverterF converter(0, minC, maxC);
+	auto colorConverted = boost::gil::color_converted_view<boost::gil::gray8_pixel_t>(view, converter);
 	jpeg_write_view(targetFile, colorConverted);
 	queue.enqueueUnmapMemObject(source, mappedImageData);
 }
@@ -418,7 +469,7 @@ int main()
 		cl::Kernel scharrVerX(program, "scharr_x_vertical");
 		cl::Kernel scharrHorY(program, "scharr_y_horizontal");
 		cl::Kernel scharrVerY(program, "scharr_y_vertical");
-		//cl::Kernel calcFlow(program, "optical_flow_2");
+		cl::Kernel calcFlow(program, "optical_flow");
 
 		cl::ImageFormat format(CL_R, CL_UNSIGNED_INT8);
 		std::size_t widthLevel0 = firstImage.width();
@@ -433,8 +484,8 @@ int main()
 		ScharrPyramid derivativeY(context, queue, scharrHorY, scharrVerY, firstImagePyramid);
 
 		GMatrixPyramid matrixG(context, queue, filterG, derivativeX, derivativeY);
-		//FlowPyramid flow(context, queue, calcFlow,
-		//	firstImagePyramid, secondImagePyramid, derivativeX, derivativeY, matrixG);
+		FlowPyramid flow(context, queue, calcFlow,
+			firstImagePyramid, secondImagePyramid, derivativeX, derivativeY, matrixG);
 
 		for (int i = 0; i < 3; ++i)
 		{
@@ -463,10 +514,17 @@ int main()
 		for (int i = 0; i < 3; ++i)
 		{
 			auto& image = matrixG.getMatrix(i);
-			saveGMatrix(queue, image, "output/g-matrix-0-" + std::to_string(i) + ".jpg", { derivativeY.getFinished(i) }, 0);
-			saveGMatrix(queue, image, "output/g-matrix-1-" + std::to_string(i) + ".jpg", { derivativeY.getFinished(i) }, 1);
-			saveGMatrix(queue, image, "output/g-matrix-2-" + std::to_string(i) + ".jpg", { derivativeY.getFinished(i) }, 2);
-			saveGMatrix(queue, image, "output/g-matrix-3-" + std::to_string(i) + ".jpg", { derivativeY.getFinished(i) }, 3);
+			saveGMatrix(queue, image, "output/g-matrix-0-" + std::to_string(i) + ".jpg", { matrixG.getFinished(i) }, 0);
+			saveGMatrix(queue, image, "output/g-matrix-1-" + std::to_string(i) + ".jpg", { matrixG.getFinished(i) }, 1);
+			saveGMatrix(queue, image, "output/g-matrix-2-" + std::to_string(i) + ".jpg", { matrixG.getFinished(i) }, 2);
+			saveGMatrix(queue, image, "output/g-matrix-3-" + std::to_string(i) + ".jpg", { matrixG.getFinished(i) }, 3);
+		}
+
+		for (int i = 0; i < 3; ++i)
+		{
+			auto& image = flow.getVector(i);
+			saveFlow(queue, image, "output/flow-0-" + std::to_string(i) + ".jpg", { flow.getFinished(i) }, 0);
+			saveFlow(queue, image, "output/flow-1-" + std::to_string(i) + ".jpg", { flow.getFinished(i) }, 1);
 		}
 
 
@@ -485,7 +543,7 @@ int main()
 		derivativeX.writeProfile(out, "X", baseCounter);
 		derivativeY.writeProfile(out, "Y", baseCounter);
 		matrixG.writeProfile(out, "matrix", baseCounter);
-		//flow.writeProfile(out, "optical", baseCounter);
+		flow.writeProfile(out, "optical", baseCounter);
 
 		return 0;
 	}
