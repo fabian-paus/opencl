@@ -11,8 +11,8 @@
 
 namespace gil = boost::gil;
 
-const std::string FIRST_IMAGE = "images/first.jpg";
-const std::string SECOND_IMAGE = "images/second.jpg";
+const std::string FIRST_IMAGE = "images/car-1.jpg";
+const std::string SECOND_IMAGE = "images/car-2.jpg";
 const std::string PROGRAM_FILE = "optical-flow.cl";
 
 void saveImage(cl::CommandQueue const& queue, cl::Image2D const& source, std::string targetFile, std::vector<cl::Event> const& waitEvents)
@@ -24,6 +24,119 @@ void saveImage(cl::CommandQueue const& queue, cl::Image2D const& source, std::st
 	auto height = source.getImageInfo<CL_IMAGE_HEIGHT>();
 	auto view = gil::interleaved_view(width, height, mappedImageData, mappedImage.rowSize);
 	jpeg_write_view(targetFile, view);
+	queue.enqueueUnmapMemObject(source, mappedImageData);
+}
+
+struct RangeColorConverter
+{
+	RangeColorConverter(int minValue, int maxValue)
+		: m_min(minValue), m_max(maxValue)
+	{ }
+
+	template <typename SrcT>
+	void operator () (SrcT const& src, gil::gray8_pixel_t& dst) const
+	{
+		const float range = (float)(m_max - m_min);
+		int value = src[0] - m_min;
+		float t = (float)value / range;
+		dst[0] = (uint8_t)(t*255);
+	}
+
+	int m_min, m_max;
+};
+
+struct RangeColorConverter1
+{
+	RangeColorConverter1(int minValue, int maxValue)
+		: m_min(minValue), m_max(maxValue)
+	{ }
+
+	template <typename SrcT>
+	void operator () (SrcT const& src, gil::gray8_pixel_t& dst) const
+	{
+		const float range = (float)(m_max - m_min);
+		int value = src[1] - m_min;
+		float t = (float)value / range;
+		dst[0] = (uint8_t)(t * 255);
+	}
+
+	int m_min, m_max;
+};
+
+template <int Index>
+struct RangeColorConverterT
+{
+	RangeColorConverterT(int minValue, int maxValue)
+		: m_min(minValue), m_max(maxValue)
+	{ }
+
+	template <typename SrcT>
+	void operator () (SrcT const& src, gil::gray8_pixel_t& dst) const
+	{
+		const float range = (float)(m_max - m_min);
+		int value = src[Index] - m_min;
+		float t = (float)value / range;
+		dst[0] = (uint8_t)(t * 255);
+	}
+
+	int m_min, m_max;
+};
+
+void saveScharrImage(cl::CommandQueue const& queue, cl::Image2D const& source, std::string targetFile, std::vector<cl::Event> const& waitEvents)
+{
+	TimedEvent event("save_image");
+	auto mappedImage = mapImage(queue, source, CL_MAP_READ, &waitEvents);
+	auto* mappedImageData = (gil::gray16s_pixel_t*)mappedImage.data;
+	auto width = source.getImageInfo<CL_IMAGE_WIDTH>();
+	auto height = source.getImageInfo<CL_IMAGE_HEIGHT>();
+	auto view = gil::interleaved_view(width, height, mappedImageData, mappedImage.rowSize);
+	
+	//boost::gil::gray8_image_t targetImage(width, height);
+	//boost::gil::copy_and_convert_pixels(view, boost::gil::view(targetImage));
+	auto rawPixel = view(3, 0);
+	int minC = INT16_MAX;
+	int maxC = INT16_MIN;
+	std::function<void(gil::gray16s_pixel_t const& pix)> minMax = [&](gil::gray16s_pixel_t const& pix)
+	{
+		if (pix[0] < minC)
+			minC = pix[0];
+		else if (pix[0] > maxC)
+			maxC = pix[0];
+	};
+	boost::gil::for_each_pixel(view, minMax);
+	RangeColorConverter converter(minC, maxC);
+	auto colorConverted = boost::gil::color_converted_view<boost::gil::gray8_pixel_t>(view, converter);
+	auto convertedPixel = colorConverted(3, 0);
+	jpeg_write_view(targetFile, colorConverted);
+	queue.enqueueUnmapMemObject(source, mappedImageData);
+}
+
+void saveGMatrix(cl::CommandQueue const& queue, cl::Image2D const& source, std::string targetFile, std::vector<cl::Event> const& waitEvents)
+{
+	TimedEvent event("save_image");
+	auto mappedImage = mapImage(queue, source, CL_MAP_READ, &waitEvents);
+	auto* mappedImageData = (gil::rgba32s_pixel_t*)mappedImage.data;
+	auto width = source.getImageInfo<CL_IMAGE_WIDTH>();
+	auto height = source.getImageInfo<CL_IMAGE_HEIGHT>();
+	auto view = gil::interleaved_view(width, height, mappedImageData, mappedImage.rowSize);
+
+	//boost::gil::gray8_image_t targetImage(width, height);
+	//boost::gil::copy_and_convert_pixels(view, boost::gil::view(targetImage));
+	int32_t minC = INT32_MAX;
+	int32_t maxC = INT32_MIN;
+	std::function<void(gil::rgba32s_pixel_t const& pix)> minMax = [&](gil::rgba32s_pixel_t const& pix)
+	{
+		if (pix[3] < minC)
+			minC = pix[3];
+		else if (pix[3] > maxC)
+			maxC = pix[3];
+	};
+	boost::gil::for_each_pixel(view, minMax);
+	RangeColorConverterT<3> converter(minC, maxC);
+	auto rawPixel = view(1, 0);
+	auto colorConverted = boost::gil::color_converted_view<boost::gil::gray8_pixel_t>(view, converter);
+	auto convertedPixel = colorConverted(1, 0);
+	jpeg_write_view(targetFile, colorConverted);
 	queue.enqueueUnmapMemObject(source, mappedImageData);
 }
 
@@ -302,11 +415,11 @@ int main()
 		auto program = buildProgram(context, device, PROGRAM_FILE);
 		cl::Kernel downFilterX(program, "downfilter_x");
 		cl::Kernel downFilterY(program, "downfilter_y");
-		//cl::Kernel filterG(program, "filter_G");
-		//cl::Kernel scharrHorX(program, "scharr_x_horizontal");
-		//cl::Kernel scharrVerX(program, "scharr_x_vertical");
-		//cl::Kernel scharrHorY(program, "scharr_y_horizontal");
-		//cl::Kernel scharrVerY(program, "scharr_y_vertical");
+		cl::Kernel filterG(program, "filter_G");
+		cl::Kernel scharrHorX(program, "scharr_x_horizontal");
+		cl::Kernel scharrVerX(program, "scharr_x_vertical");
+		cl::Kernel scharrHorY(program, "scharr_y_horizontal");
+		cl::Kernel scharrVerY(program, "scharr_y_vertical");
 		//cl::Kernel calcFlow(program, "optical_flow_2");
 
 		cl::ImageFormat format(CL_R, CL_UNSIGNED_INT8);
@@ -317,19 +430,45 @@ int main()
 		timer.start();
 
 		ImagePyramid firstImagePyramid(firstImage, context, queue, downFilterX, downFilterY);
-		//ScharrPyramid derivativeX(context, queue, scharrHorX, scharrVerX, firstImagePyramid);
-		//ScharrPyramid derivativeY(context, queue, scharrHorY, scharrVerY, firstImagePyramid);
-		//ImagePyramid secondImagePyramid(secondImage, context, queue, downFilterX, downFilterY);
+		ImagePyramid secondImagePyramid(secondImage, context, queue, downFilterX, downFilterY);
+		ScharrPyramid derivativeX(context, queue, scharrHorX, scharrVerX, firstImagePyramid);
+		ScharrPyramid derivativeY(context, queue, scharrHorY, scharrVerY, firstImagePyramid);
 
-		//GMatrixPyramid matrixG(context, queue, filterG, derivativeX, derivativeY);
+		GMatrixPyramid matrixG(context, queue, filterG, derivativeX, derivativeY);
 		//FlowPyramid flow(context, queue, calcFlow,
 		//	firstImagePyramid, secondImagePyramid, derivativeX, derivativeY, matrixG);
 
 		for (int i = 0; i < 3; ++i)
 		{
 			auto& image = firstImagePyramid.getImage(i);
-			saveImage(queue, image, "first-scaled-" + std::to_string(i) + ".jpg", { firstImagePyramid.getFinished(i) });
+			saveImage(queue, image, "output/first-scaled-" + std::to_string(i) + ".jpg", { firstImagePyramid.getFinished(i) });
 		}
+
+		for (int i = 0; i < 3; ++i)
+		{
+			auto& image = firstImagePyramid.getImage(i);
+			saveImage(queue, image, "output/second-scaled-" + std::to_string(i) + ".jpg", { firstImagePyramid.getFinished(i) });
+		}
+
+		for (int i = 0; i < 3; ++i)
+		{
+			auto& image = derivativeX.getDerivative(i);
+			saveScharrImage(queue, image, "output/scharr-x-" + std::to_string(i) + ".jpg", { derivativeX.getFinished(i) });
+		}
+
+		for (int i = 0; i < 3; ++i)
+		{
+			auto& image = derivativeY.getDerivative(i);
+			saveScharrImage(queue, image, "output/scharr-y-" + std::to_string(i) + ".jpg", { derivativeY.getFinished(i) });
+		}
+
+		for (int i = 0; i < 3; ++i)
+		{
+			auto& image = matrixG.getMatrix(i);
+			saveGMatrix(queue, image, "output/g-matrix-" + std::to_string(i) + ".jpg", { derivativeY.getFinished(i) });
+		}
+
+
 
 		queue.finish();
 		timer.stop("down_filter_all");
@@ -341,10 +480,10 @@ int main()
 		out << ";Not Existing;Queued;Submitted;Running\n";
 
 		firstImagePyramid.writeProfile(out, "image 1", baseCounter);
-		//secondImagePyramid.writeProfile(out, "image 2", baseCounter);
-		//derivativeX.writeProfile(out, "X", baseCounter);
-		//derivativeY.writeProfile(out, "Y", baseCounter);
-		//matrixG.writeProfile(out, "matrix", baseCounter);
+		secondImagePyramid.writeProfile(out, "image 2", baseCounter);
+		derivativeX.writeProfile(out, "X", baseCounter);
+		derivativeY.writeProfile(out, "Y", baseCounter);
+		matrixG.writeProfile(out, "matrix", baseCounter);
 		//flow.writeProfile(out, "optical", baseCounter);
 
 		return 0;

@@ -145,6 +145,8 @@ cl::Program buildProgram(cl::Context const& context, cl::Device const& device, s
 	try
 	{
 		program.build({ device });
+		auto buildLog = program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device);
+		std::cout << buildLog << std::endl;
 		return program;
 	}
 	catch (cl::Error const& error)

@@ -1,0 +1,267 @@
+#include "runtime.hpp"
+
+#include <CL/cl.hpp>
+
+#include <boost/gil/image.hpp>
+
+#include <iostream>
+#include <fstream>
+#include <array>
+
+namespace gil = boost::gil;
+
+const std::string FIRST_IMAGE = "images/first.jpg";
+const std::string SECOND_IMAGE = "images/second.jpg";
+const std::string PROGRAM_FILE = "optical-flow.cl";
+
+void saveImage(cl::CommandQueue const& queue, cl::Image2D const& source, std::string targetFile, std::vector<cl::Event> const& waitEvents)
+{
+	TimedEvent event("save_image");
+	auto mappedImage = mapImage(queue, source, CL_MAP_READ, &waitEvents);
+	auto* mappedImageData = (gil::gray8_pixel_t*)mappedImage.data;
+	auto width = source.getImageInfo<CL_IMAGE_WIDTH>();
+	auto height = source.getImageInfo<CL_IMAGE_HEIGHT>();
+	auto view = gil::interleaved_view(width, height, mappedImageData, mappedImage.rowSize);
+	jpeg_write_view(targetFile, view);
+	queue.enqueueUnmapMemObject(source, mappedImageData);
+}
+
+void writeProfileInfo(std::ostream& out, cl::Event const& event, std::string name, cl_ulong baseCounter)
+{
+	auto queued = event.getProfilingInfo<CL_PROFILING_COMMAND_QUEUED>() - baseCounter;
+	auto submit = event.getProfilingInfo<CL_PROFILING_COMMAND_SUBMIT>() - baseCounter;
+	auto start = event.getProfilingInfo<CL_PROFILING_COMMAND_START>() - baseCounter;
+	auto end = event.getProfilingInfo<CL_PROFILING_COMMAND_END>() - baseCounter;
+	out << name << ";" << queued << ";" << submit - queued << ";" << start - submit << ";" << end - start << "\n";
+}
+
+cl::Image2D createImage(cl::Context const& context, cl_mem_flags memFlags, cl::ImageFormat const& format, cl::NDRange const& dimension)
+{
+	return cl::Image2D(context, memFlags, format, dimension[0], dimension[1]);
+}
+
+#ifdef NDEBUG
+const cl_mem_flags INTERMEDIATE_MEMORY_FLAGS = CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS;
+const cl_mem_flags INPUT_MEMORY_FLAGS = CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_WRITE_ONLY;
+#else
+// Allow host access to the images in debug mode
+const cl_mem_flags INTERMEDIATE_MEMORY_FLAGS = CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR;
+const cl_mem_flags INPUT_MEMORY_FLAGS = CL_MEM_ALLOC_HOST_PTR | CL_MEM_READ_ONLY;
+#endif
+
+const std::size_t PYRAMID_HEIGHT = 3;
+const cl::ImageFormat IMAGE_FORMAT(CL_R, CL_UNSIGNED_INT8);
+
+class ImagePyramid
+{
+public:
+	ImagePyramid(gil::gray8_image_t const& image, cl::Context const& context, cl::CommandQueue const& queue,
+		cl::Kernel& downFilterX, cl::Kernel& downFilterY)
+		: m_waitEvents(1)
+	{
+		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
+		{
+			// Half the dimensions with every level
+			auto width = image.width() >> i;
+			auto height = image.height() >> i;
+			m_dimensions[i] = cl::NDRange(width, height);
+
+			cl_mem_flags memoryFlags = (i == 0) ? INPUT_MEMORY_FLAGS : INTERMEDIATE_MEMORY_FLAGS;
+			m_images[i] = createImage(context, memoryFlags, IMAGE_FORMAT, m_dimensions[i]);
+		}
+
+		// Copy level 0
+		m_finished[0] = copyImage(queue, image, m_images[0]);
+
+		// Downfiltering for levels 1 and 2
+		for (std::size_t i = 0; i < PYRAMID_HEIGHT - 1; ++i)
+		{
+			m_intermediateImages[i] = createImage(context, INTERMEDIATE_MEMORY_FLAGS, IMAGE_FORMAT, m_dimensions[i]);
+			downFilterX.setArg(0, m_images[i]);
+			downFilterX.setArg(1, m_intermediateImages[i]);
+
+			m_waitEvents[0] = m_finished[i];
+			queue.enqueueNDRangeKernel(downFilterX, cl::NullRange, m_dimensions[i], cl::NullRange, &m_waitEvents, &m_intermediateEvents[i]);
+
+			downFilterY.setArg(0, m_intermediateImages[i]);
+			downFilterY.setArg(1, m_images[i + 1]);
+
+			m_waitEvents[0] = m_intermediateEvents[i];
+			queue.enqueueNDRangeKernel(downFilterY, cl::NullRange, m_dimensions[i + 1], cl::NullRange, &m_waitEvents, &m_finished[i + 1]);
+		}
+	}
+
+	cl::Image2D const& getImage(std::size_t level) const { return m_images[level]; }
+
+	cl::NDRange const& getDimenstion(std::size_t level) const { return m_dimensions[level]; }
+
+	cl::Event const& getFinished(std::size_t level) const { return m_finished[level]; }
+
+private:
+	std::vector<cl::Event> m_waitEvents;
+
+	std::array<cl::Image2D, PYRAMID_HEIGHT> m_images;
+	std::array<cl::NDRange, PYRAMID_HEIGHT> m_dimensions;
+	std::array<cl::Event, PYRAMID_HEIGHT> m_finished;
+
+	std::array<cl::Image2D, PYRAMID_HEIGHT - 1> m_intermediateImages;
+	std::array<cl::Event, PYRAMID_HEIGHT - 1> m_intermediateEvents;
+};
+
+const cl::ImageFormat G_MATRIX_FORMAT(CL_RGBA, CL_SIGNED_INT32);
+
+class GMatrixPyramid
+{
+public:
+	GMatrixPyramid(cl::Context const& context, cl::CommandQueue const& queue, cl::Kernel& filterG,
+		ImagePyramid const& first, ImagePyramid const& second)
+		: m_waitEvents(2)
+	{
+		for (std::size_t i = 0; i < PYRAMID_HEIGHT; ++i)
+		{
+			m_matrices[i] = createImage(context, INTERMEDIATE_MEMORY_FLAGS, G_MATRIX_FORMAT, first.getDimenstion(i));
+
+			filterG.setArg(0, first.getImage(i));
+			filterG.setArg(1, second.getImage(i));
+			filterG.setArg(2, m_matrices[i]);
+
+			m_waitEvents[0] = first.getFinished(i);
+			m_waitEvents[1] = second.getFinished(i);
+			queue.enqueueNDRangeKernel(filterG, cl::NullRange, first.getDimenstion(i), cl::NullRange, &m_waitEvents, &m_finished[i]);
+		}
+	}
+
+	cl::Image2D const& getMatrix(std::size_t level) const { return m_matrices[level]; }
+
+	cl::Event const& getFinished(std::size_t level) const { return m_finished[level]; }
+
+private:
+	std::vector<cl::Event> m_waitEvents;
+	std::array<cl::Image2D, PYRAMID_HEIGHT> m_matrices;
+	std::array<cl::Event, PYRAMID_HEIGHT> m_finished;
+};
+
+int main()
+{
+	try
+	{
+		gil::gray8_image_t firstImage, secondImage;
+		loadImage(FIRST_IMAGE, firstImage);
+		loadImage(SECOND_IMAGE, secondImage);
+		if (firstImage.dimensions() != secondImage.dimensions())
+		{
+			std::cout << "The images have different dimensions!\n";
+			return -1;
+		}
+
+		auto platform = choosePlatform();
+		auto device = chooseDevice(platform, CL_DEVICE_TYPE_CPU);
+
+		cl::Context context(device);
+		cl::CommandQueue queue(context, device, CL_QUEUE_PROFILING_ENABLE | CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE);
+
+		auto program = buildProgram(context, device, PROGRAM_FILE);
+		cl::Kernel downFilterX(program, "downfilter_x");
+		cl::Kernel downFilterY(program, "downfilter_y");
+		cl::Kernel filterG(program, "filter_G");
+		cl::Kernel scharrHorX(program, "scharr_x_horizontal");
+		cl::Kernel scharrVerX(program, "scharr_x_vertical");
+		cl::Kernel scharrHorY(program, "scharr_y_horizontal");
+		cl::Kernel scharrVerY(program, "scharr_y_vertical");
+
+		cl::ImageFormat format(CL_R, CL_UNSIGNED_INT8);
+		std::size_t widthLevel0 = firstImage.width();
+		std::size_t heightLevel0 = firstImage.height();
+
+		Timer timer;
+		timer.start();
+
+		// Copy images to level 0
+		ImagePyramid firstImagePyramid(firstImage, context, queue, downFilterX, downFilterY);
+		ImagePyramid secondImagePyramid(secondImage, context, queue, downFilterX, downFilterY);
+
+		//queue.finish();
+
+		GMatrixPyramid matrixG(context, queue, filterG, firstImagePyramid, secondImagePyramid);
+
+		cl::ImageFormat formatScharr(CL_R, CL_SIGNED_INT16);
+
+		// Level 0 Scharr X Horizontal
+		cl::Image2D imageScharrHorX0(context, INTERMEDIATE_MEMORY_FLAGS, formatScharr, widthLevel0, heightLevel0);
+
+		std::vector<cl::Event> waitEvents(1);
+
+		scharrHorX.setArg(0, firstImagePyramid.getImage(0));
+		scharrHorX.setArg(1, imageScharrHorX0);
+		waitEvents[0] = firstImagePyramid.getFinished(0);
+		cl::Event scharrHorX0;
+		queue.enqueueNDRangeKernel(scharrHorX, cl::NullRange, firstImagePyramid.getDimenstion(0), cl::NullRange, &waitEvents, &scharrHorX0);
+
+		// Level 0 Scharr X Vertical
+		cl::Image2D imageScharrVerX0(context, INTERMEDIATE_MEMORY_FLAGS, formatScharr, widthLevel0, heightLevel0);
+
+		scharrVerX.setArg(0, imageScharrHorX0);
+		scharrVerX.setArg(1, imageScharrVerX0);
+		waitEvents[0] = scharrHorX0;
+		cl::Event scharrVerX0;
+		queue.enqueueNDRangeKernel(scharrVerX, cl::NullRange, firstImagePyramid.getDimenstion(0), cl::NullRange, &waitEvents, &scharrVerX0);
+
+		// Level 0 Scharr Y Horizontal
+		cl::Image2D imageScharrHorY0(context, INTERMEDIATE_MEMORY_FLAGS, formatScharr, widthLevel0, heightLevel0);
+
+		scharrHorY.setArg(0, firstImagePyramid.getImage(0));
+		scharrHorY.setArg(1, imageScharrHorY0);
+		waitEvents[0] = firstImagePyramid.getFinished(0);
+		cl::Event scharrHorY0;
+		queue.enqueueNDRangeKernel(scharrHorY, cl::NullRange, firstImagePyramid.getDimenstion(0), cl::NullRange, &waitEvents, &scharrHorY0);
+
+		// Level 0 Scharr Y Vertical
+		cl::Image2D imageScharrVerY0(context, INTERMEDIATE_MEMORY_FLAGS, formatScharr, widthLevel0, heightLevel0);
+
+		scharrVerY.setArg(0, imageScharrHorY0);
+		scharrVerY.setArg(1, imageScharrVerY0);
+		waitEvents[0] = scharrHorX0;
+		cl::Event scharrVerY0;
+		queue.enqueueNDRangeKernel(scharrVerY, cl::NullRange, firstImagePyramid.getDimenstion(0), cl::NullRange, &waitEvents, &scharrVerY0);
+
+		queue.finish();
+		timer.stop("down_filter_all");
+
+		std::ofstream out("profile.csv");
+
+		auto baseCounter = firstImagePyramid.getFinished(0).getProfilingInfo<CL_PROFILING_COMMAND_QUEUED>();
+
+		out << ";Not Existing;Queued;Submitted;Running\n";
+		writeProfileInfo(out, firstImagePyramid.getFinished(0), "Copy Image 1", baseCounter);
+		writeProfileInfo(out, secondImagePyramid.getFinished(0), "Copy Image 2", baseCounter);
+
+		//writeProfileInfo(out, downFilterX_firstLevel0, "DownFilterX Image 1 Level 0", baseCounter);
+		//writeProfileInfo(out, downFilterX_secondLevel0, "DownFilterX Image 2 Level 0", baseCounter);
+		//writeProfileInfo(out, downFilterY_firstLevel0, "DownFilterY Image 1 Level 0", baseCounter);
+		//writeProfileInfo(out, downFilterY_secondLevel0, "DownFilterY Image 2 Level 0", baseCounter);
+
+		//writeProfileInfo(out, downFilterX_firstLevel1, "DownFilterX Image 1 Level 1", baseCounter);
+		//writeProfileInfo(out, downFilterX_secondLevel1, "DownFilterX Image 2 Level 1", baseCounter);
+		//writeProfileInfo(out, downFilterY_firstLevel1, "DownFilterY Image 1 Level 1", baseCounter);
+		//writeProfileInfo(out, downFilterY_secondLevel1, "DownFilterY Image 2 Level 1", baseCounter);
+
+		//writeProfileInfo(out, filterG0, "FilterG Level 0", baseCounter);
+		//writeProfileInfo(out, filterG1, "FilterG Level 1", baseCounter);
+		//writeProfileInfo(out, filterG2, "FilterG Level 2", baseCounter);
+
+		//writeProfileInfo(out, scharrHorX0, "Scharr X Horizontal Level 0", baseCounter);
+		//writeProfileInfo(out, scharrVerX0, "Scharr X Vertical Level 0", baseCounter);
+		//writeProfileInfo(out, scharrHorY0, "Scharr Y Horizontal Level 0", baseCounter);
+		//writeProfileInfo(out, scharrVerY0, "Scharr Y Vertical Level 0", baseCounter);
+
+		//auto maxCounter = filterG0.getProfilingInfo<CL_PROFILING_COMMAND_END>() - baseCounter;
+		//std::cout << "Max counter: " << maxCounter << std::endl;
+
+		return 0;
+	}
+	catch (std::exception const& ex)
+	{
+		std::cout << ex.what() << std::endl;
+		return -1;
+	}
+}
