@@ -7,6 +7,8 @@
 #include <fstream>
 #include <array>
 #include <cstdint>
+#include <ctime>
+#include <random>
 
 namespace gil = boost::gil;
 
@@ -108,8 +110,6 @@ void saveScharrImage(cl::CommandQueue const& queue, cl::Image2D const& source, s
 	auto height = source.getImageInfo<CL_IMAGE_HEIGHT>();
 	auto view = gil::interleaved_view(width, height, mappedImageData, mappedImage.rowSize);
 	
-	//boost::gil::gray8_image_t targetImage(width, height);
-	//boost::gil::copy_and_convert_pixels(view, boost::gil::view(targetImage));
 	auto rawPixel = view(3, 0);
 	int minC = INT16_MAX;
 	int maxC = INT16_MIN;
@@ -172,17 +172,41 @@ void saveFlow(cl::CommandQueue const& queue, cl::Image2D const& source, std::str
 	auto rowSize = mappedImage.rowSize / 2;
 	auto view = gil::interleaved_view(width, height, oneChannel.data(), rowSize);
 
-	float minC = -1000.0f;
-	float maxC = +1000.0f;
-	//std::function<void(gil::gray32f_pixel_t const& pix)> minMax = [&](gil::gray32f_pixel_t const& pix)
-	//{
-	//	auto value = pix[0];
-	//	if (value < minC)
-	//		minC = value;
-	//	else if (value > maxC)
-	//		maxC = value;
-	//};
-	//boost::gil::for_each_pixel(view, minMax);
+	float minC = 1000.0f;
+	float maxC = -1000.0f;
+	std::function<void(gil::gray32f_pixel_t const& pix)> minmax = [&](gil::gray32f_pixel_t const& pix)
+	{
+		auto value = pix[0];
+		if (value < minC)
+			minC = value;
+		else if (value > maxC)
+			maxC = value;
+	};
+	int maxX = 0;
+	int maxY = 0;
+	int minX = 0;
+	int minY = 0;
+	for (int y = 0; y < height; ++y)
+		for (int x = 0; x < width; ++x)
+		{
+			auto value = view(x, y)[0];
+			if (value < minC)
+			{
+				minC = value;
+				minX = x;
+				minY = y;
+			}
+			else if (value > maxC)
+			{
+				maxC = value;
+				maxX = x; 
+				maxY = y;
+			}
+		}
+	//boost::gil::for_each_pixel(view, minmax);
+	std::cout << targetFile << " min: " << minC << " max: " << maxC << std::endl;
+	std::cout << targetFile << " maxX: " << maxX << " maxY: " << maxY << std::endl;
+	std::cout << targetFile << " minX: " << minX << " minY: " << minY << std::endl;
 	RangeColorConverterF converter(0, minC, maxC);
 	auto colorConverted = boost::gil::color_converted_view<boost::gil::gray8_pixel_t>(view, converter);
 	jpeg_write_view(targetFile, colorConverted);
@@ -442,6 +466,61 @@ private:
 	std::array<cl::Event, PYRAMID_HEIGHT> m_finished;
 };
 
+boost::gil::rgba8_pixel_t randColor()
+{
+	static std::mt19937 generator;
+	static std::uniform_int_distribution<int> distribution(0, 255);
+	int r = distribution(generator);
+	int g = distribution(generator);
+	int b = distribution(generator);
+	return boost::gil::rgba8_pixel_t(r, g, b, 255);
+}
+
+void drawLines(gil::rgb8_image_t& output, gil::gray8_image_t const& base, cl::Image2D const& vector, cl::CommandQueue const& queue, std::vector<cl::Event> const& waitEvents)
+{
+	boost::gil::copy_pixels(gil::color_converted_view<gil::rgb8_pixel_t>(const_view(base)), view(output));
+	//boost::gil::fill_pixels(view(output), gil::rgba8_pixel_t(0, 0, 0, 0));
+
+	// NOTE: vector ist 4x so klein wie Output
+	//  alle 32 Pixel in output soll ein Vektor angebracht werden
+	auto width = output.width();
+	auto height = output.height();
+	auto vectorWidth = width / 4;
+
+	std::default_random_engine generator(2);
+	auto outputView = view(output);
+	auto STEP_SIZE = 8;
+	for (int y = 1; y < height; y += STEP_SIZE)
+		for (int x = 1; x < width; x += STEP_SIZE)
+		{
+			auto mappedImage = mapImage(queue, vector, CL_MAP_READ, &waitEvents);
+			auto* mappedImageData = (float*)mappedImage.data;
+			auto vectorPosX = x / 4;
+			auto vectorPosY = y / 4;
+			auto vectorX = mappedImageData[(vectorPosY * vectorWidth + vectorPosX) * 2];
+			auto vectorY = mappedImageData[(vectorPosY * vectorWidth + vectorPosX) * 2 + 1];
+			//std::cout << "vector(" << vectorPosX << ", " << vectorPosY << "): " 
+			//	<< "(" << vectorX << ", " << vectorY << ")" << std::endl;
+			float length = std::roundf(vectorX * vectorX + vectorY * vectorY);
+			float unitX = (vectorX / length);
+			float unitY = (vectorY / length);
+			//auto color = randColor();
+			//outputView((int)std::roundf(x), (int)std::roundf(y)) = color;
+			float maxLength = 4 * length;
+			for (int i = 0; i <= (int)maxLength; i += 1)
+			{
+				int xPos = (int)std::roundf(x + i * unitX);
+				int yPos = (int)std::roundf(y + i * unitY);
+				int8_t colorValue = (int8_t)(i * 128.0f / maxLength);
+				if (xPos >= 0 && xPos < width && yPos >= 0 && yPos < height)
+				{
+					boost::gil::rgba8_pixel_t color(255, colorValue, 16, 255);
+					outputView(xPos, yPos) = color;
+				}
+			}
+		}
+}
+
 int main()
 {
 	try
@@ -469,7 +548,7 @@ int main()
 		cl::Kernel scharrVerX(program, "scharr_x_vertical");
 		cl::Kernel scharrHorY(program, "scharr_y_horizontal");
 		cl::Kernel scharrVerY(program, "scharr_y_vertical");
-		cl::Kernel calcFlow(program, "optical_flow");
+		cl::Kernel calcFlow(program, "optical_flow_2");
 
 		cl::ImageFormat format(CL_R, CL_UNSIGNED_INT8);
 		std::size_t widthLevel0 = firstImage.width();
@@ -495,7 +574,7 @@ int main()
 
 		for (int i = 0; i < 3; ++i)
 		{
-			auto& image = firstImagePyramid.getImage(i);
+			auto& image = secondImagePyramid.getImage(i);
 			saveImage(queue, image, "output/second-scaled-" + std::to_string(i) + ".jpg", { firstImagePyramid.getFinished(i) });
 		}
 
@@ -523,10 +602,17 @@ int main()
 		for (int i = 0; i < 3; ++i)
 		{
 			auto& image = flow.getVector(i);
-			saveFlow(queue, image, "output/flow-0-" + std::to_string(i) + ".jpg", { flow.getFinished(i) }, 0);
-			saveFlow(queue, image, "output/flow-1-" + std::to_string(i) + ".jpg", { flow.getFinished(i) }, 1);
+			saveFlow(queue, image, "output/flow-x-" + std::to_string(i) + ".jpg", { flow.getFinished(i) }, 0);
+			saveFlow(queue, image, "output/flow-y-" + std::to_string(i) + ".jpg", { flow.getFinished(i) }, 1);
 		}
 
+		boost::gil::rgb8_image_t withLines(firstImage.width(), firstImage.height());
+		drawLines(withLines, firstImage, flow.getVector(2), queue, { flow.getFinished(2) });
+		jpeg_write_view("output/lines.jpeg", view(withLines));
+
+		boost::gil::rgb8_image_t withLines2(firstImage.width(), firstImage.height());
+		drawLines(withLines2, secondImage, flow.getVector(2), queue, { flow.getFinished(2) });
+		jpeg_write_view("output/lines2.jpeg", view(withLines2));
 
 
 		queue.finish();

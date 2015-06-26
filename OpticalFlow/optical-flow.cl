@@ -326,7 +326,7 @@ __kernel void optical_flow_2(
     float4 Ginv = { Gmat.s3/det_G, -Gmat.s1/det_G, -Gmat.s2/det_G, Gmat.s0/det_G };
 
     // for large motions we can approximate them faster by applying gain to the motion
-    float gain = 4.f;
+    float gain = 4.0f;
     for (int k=0 ; k < 8 ; k++)
 	{
         float2 Jidx = { Iidx.x + g.x + v.x, Iidx.y + g.y + v.y };
@@ -336,7 +336,7 @@ __kernel void optical_flow_2(
         // calculate the mismatch vector
         for (int j = -FRAD; j <= FRAD; j++) 
 		{
-            for (int i = - FRAD; i <= FRAD; i++) 
+            for (int i = -FRAD; i <= FRAD; i++) 
 			{
                 // this should use shared memory instead...
                 int Isample = smem[tIdx.y + FRAD +j][tIdx.x + FRAD+ i];
